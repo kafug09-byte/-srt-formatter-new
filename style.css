@@ -362,13 +362,20 @@ h1 {
   position: relative;
 }
 
+.segment-header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
 .editable-text {
   outline: none;
   cursor: text;
-  padding: 2px 4px;
+  padding: 6px 8px;
   border-radius: 4px;
   transition: background 0.15s;
   min-height: 1.5em;
+  line-height: 1.6;
 }
 
 .editable-text:hover {
@@ -378,6 +385,44 @@ h1 {
 .editable-text:focus {
   background: rgba(74, 158, 255, 0.08);
   box-shadow: 0 0 0 1px rgba(74, 158, 255, 0.3);
+}
+
+/* セグメント操作ボタン */
+.segment-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 8px;
+  justify-content: center;
+}
+
+.merge-btn, .split-btn {
+  padding: 3px 12px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.merge-btn {
+  background: #1a2a1a;
+  color: #4aff80;
+  border-color: #2a4a2a;
+}
+
+.merge-btn:hover {
+  background: #2a3a2a;
+}
+
+.split-btn {
+  background: #2a1a1a;
+  color: #ff8080;
+  border-color: #4a2a2a;
+}
+
+.split-btn:hover {
+  background: #3a2a2a;
 }
 
 .edit-hint {

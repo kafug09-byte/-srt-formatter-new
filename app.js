@@ -1,6 +1,6 @@
 /**
  * SRT整形ツール - UIコントローラー
- * 編集可能な整形結果 + 差分出力機能
+ * 編集可能な整形結果 + セグメント分割/結合 + 差分出力
  */
 
 function getParseSRT() { return window.SRTFormatter.parseSRT; }
@@ -27,8 +27,6 @@ const closeDiffModal = document.getElementById('closeDiffModal');
 const copyDiffBtn = document.getElementById('copyDiffBtn');
 
 // 設定
-const charsPerLineInput = document.getElementById('charsPerLine');
-const maxLinesSelect = document.getElementById('maxLines');
 const removePunctuationCb = document.getElementById('removePunctuation');
 const removeFillersCb = document.getElementById('removeFillers');
 const splitSegmentsCb = document.getElementById('splitSegments');
@@ -43,9 +41,9 @@ document.addEventListener('drop', (e) => e.preventDefault());
 // 状態
 // ============================================================
 let originalSegments = null;
-let formattedSegments = null;    // 自動整形の結果（変更しない）
+let autoFormattedSegments = null;  // 自動整形の結果（差分比較用、変更しない）
+let editSegments = [];             // 編集中のセグメント（ユーザーが操作する）
 let originalSRT = '';
-let formattedSRT = '';
 let currentFileName = '';
 
 // ============================================================
@@ -84,14 +82,10 @@ uploadArea.addEventListener('drop', (e) => {
 });
 
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) {
-    loadFile(fileInput.files[0]);
-  }
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
 });
 
-clearFile.addEventListener('click', () => {
-  resetState();
-});
+clearFile.addEventListener('click', () => resetState());
 
 function loadFile(file) {
   currentFileName = file.name;
@@ -110,9 +104,9 @@ function loadFile(file) {
 
 function resetState() {
   originalSegments = null;
-  formattedSegments = null;
+  autoFormattedSegments = null;
+  editSegments = [];
   originalSRT = '';
-  formattedSRT = '';
   currentFileName = '';
   fileInput.value = '';
   uploadArea.style.display = '';
@@ -133,31 +127,173 @@ formatBtn.addEventListener('click', () => {
     shouldRemoveFillers: removeFillersCb.checked,
   };
 
-  formattedSegments = getFormatSegments()(originalSegments, options);
-  formattedSRT = getSegmentsToSRT()(formattedSegments);
+  autoFormattedSegments = getFormatSegments()(originalSegments, options);
+  // 編集用にディープコピー
+  editSegments = JSON.parse(JSON.stringify(autoFormattedSegments));
 
-  // 統計
   statsEl.innerHTML = `
     <div class="stat-item">元: <span class="stat-value">${originalSegments.length}</span>セグメント</div>
-    <div class="stat-item">整形後: <span class="stat-value">${formattedSegments.length}</span>セグメント</div>
+    <div class="stat-item">整形後: <span class="stat-value">${autoFormattedSegments.length}</span>セグメント</div>
   `;
 
   previewSection.style.display = '';
-  renderEditableSegments();
+  renderEditor();
 });
 
 // ============================================================
-// 編集可能なセグメント表示
+// エディタ表示
 // ============================================================
 
-function renderEditableSegments() {
-  previewContent.innerHTML = formattedSegments.map((seg, i) =>
-    `<div class="segment editable-segment" data-index="${i}">` +
-    `<span class="index">${seg.index}</span>` +
-    `<span class="timestamp">${seg.startTime} --> ${seg.endTime}</span>` +
-    `<div class="text editable-text" contenteditable="true" data-index="${i}">${escapeHtml(seg.text)}</div>` +
-    `</div>`
-  ).join('');
+function renderEditor() {
+  let html = '';
+
+  for (let i = 0; i < editSegments.length; i++) {
+    const seg = editSegments[i];
+
+    html += `<div class="segment editable-segment" data-index="${i}">`;
+    html += `<div class="segment-header">`;
+    html += `<span class="index">${i + 1}</span>`;
+    html += `<span class="timestamp">${seg.startTime} --> ${seg.endTime}</span>`;
+    html += `</div>`;
+    html += `<div class="text editable-text" contenteditable="true" data-index="${i}">${escapeHtml(seg.text)}</div>`;
+
+    // 結合ボタン（最後のセグメント以外）
+    if (i < editSegments.length - 1) {
+      html += `<div class="segment-actions">`;
+      html += `<button class="merge-btn" data-index="${i}" title="下のセグメントと結合">↕ 結合</button>`;
+      html += `<button class="split-btn" data-index="${i}" title="このセグメントをカーソル位置で分割">✂ 分割</button>`;
+      html += `</div>`;
+    } else {
+      html += `<div class="segment-actions">`;
+      html += `<button class="split-btn" data-index="${i}" title="このセグメントをカーソル位置で分割">✂ 分割</button>`;
+      html += `</div>`;
+    }
+
+    html += `</div>`;
+  }
+
+  previewContent.innerHTML = html;
+
+  // イベント登録
+  previewContent.querySelectorAll('.editable-text').forEach(el => {
+    el.addEventListener('input', onTextEdit);
+  });
+  previewContent.querySelectorAll('.merge-btn').forEach(el => {
+    el.addEventListener('click', onMerge);
+  });
+  previewContent.querySelectorAll('.split-btn').forEach(el => {
+    el.addEventListener('click', onSplit);
+  });
+
+  updateStats();
+}
+
+function updateStats() {
+  statsEl.innerHTML = `
+    <div class="stat-item">元: <span class="stat-value">${originalSegments.length}</span>セグメント</div>
+    <div class="stat-item">自動整形: <span class="stat-value">${autoFormattedSegments.length}</span></div>
+    <div class="stat-item">現在: <span class="stat-value">${editSegments.length}</span></div>
+  `;
+}
+
+// ============================================================
+// テキスト編集
+// ============================================================
+
+function onTextEdit(e) {
+  const idx = parseInt(e.target.dataset.index);
+  if (idx >= 0 && idx < editSegments.length) {
+    editSegments[idx].text = e.target.innerText;
+  }
+}
+
+// ============================================================
+// セグメント結合
+// ============================================================
+
+function onMerge(e) {
+  const idx = parseInt(e.target.dataset.index);
+  if (idx < 0 || idx >= editSegments.length - 1) return;
+
+  // 現在の編集内容を保存
+  syncEditsFromDOM();
+
+  // 結合
+  editSegments[idx].text = editSegments[idx].text + '\n' + editSegments[idx + 1].text;
+  editSegments[idx].endTime = editSegments[idx + 1].endTime;
+  editSegments.splice(idx + 1, 1);
+
+  renderEditor();
+}
+
+// ============================================================
+// セグメント分割
+// ============================================================
+
+function onSplit(e) {
+  const idx = parseInt(e.target.dataset.index);
+  if (idx < 0 || idx >= editSegments.length) return;
+
+  // 現在の編集内容を保存
+  syncEditsFromDOM();
+
+  const seg = editSegments[idx];
+  const fullText = seg.text;
+
+  // テキストエリア内のカーソル位置を取得
+  const textEl = previewContent.querySelector(`.editable-text[data-index="${idx}"]`);
+  const sel = window.getSelection();
+  let offset = -1;
+
+  if (sel && sel.rangeCount > 0 && textEl.contains(sel.anchorNode)) {
+    // カーソル位置を計算
+    const range = sel.getRangeAt(0);
+    const preRange = document.createRange();
+    preRange.selectNodeContents(textEl);
+    preRange.setEnd(range.startContainer, range.startOffset);
+    offset = preRange.toString().length;
+  }
+
+  if (offset <= 0 || offset >= fullText.length) {
+    // カーソルがない場合は中間で分割
+    offset = Math.floor(fullText.length / 2);
+  }
+
+  const textBefore = fullText.substring(0, offset);
+  const textAfter = fullText.substring(offset);
+
+  // 時間を文字数比率で按分
+  const startMs = window.SRTFormatter.timeToMs(seg.startTime);
+  const endMs = window.SRTFormatter.timeToMs(seg.endTime);
+  const ratio = offset / fullText.length;
+  const splitMs = startMs + Math.round((endMs - startMs) * ratio);
+  const splitTime = window.SRTFormatter.msToTime(splitMs);
+
+  // 分割実行
+  editSegments[idx].text = textBefore;
+  editSegments[idx].endTime = splitTime;
+
+  editSegments.splice(idx + 1, 0, {
+    index: idx + 2,
+    startTime: splitTime,
+    endTime: seg.endTime,
+    text: textAfter,
+  });
+
+  renderEditor();
+}
+
+// ============================================================
+// DOM → editSegments 同期
+// ============================================================
+
+function syncEditsFromDOM() {
+  previewContent.querySelectorAll('.editable-text').forEach(el => {
+    const idx = parseInt(el.dataset.index);
+    if (idx >= 0 && idx < editSegments.length) {
+      editSegments[idx].text = el.innerText;
+    }
+  });
 }
 
 // ============================================================
@@ -165,8 +301,8 @@ function renderEditableSegments() {
 // ============================================================
 
 diffBtn.addEventListener('click', () => {
-  const editedSegments = getEditedSegments();
-  const diffText = generateDiff(formattedSegments, editedSegments);
+  syncEditsFromDOM();
+  const diffText = generateDiff(autoFormattedSegments, editSegments);
   diffOutput.value = diffText;
   diffModal.style.display = 'flex';
 });
@@ -183,59 +319,62 @@ copyDiffBtn.addEventListener('click', () => {
 });
 
 /**
- * 画面上の編集済みテキストを取得
- */
-function getEditedSegments() {
-  const editables = previewContent.querySelectorAll('.editable-text');
-  const edited = [];
-  editables.forEach((el, i) => {
-    if (i < formattedSegments.length) {
-      edited.push({
-        index: formattedSegments[i].index,
-        startTime: formattedSegments[i].startTime,
-        endTime: formattedSegments[i].endTime,
-        text: el.innerText.trim(),
-      });
-    }
-  });
-  return edited;
-}
-
-/**
  * 自動整形と手動修正の差分テキストを生成
+ * セグメント分割・結合・テキスト変更を全て検出
  */
-function generateDiff(autoSegments, editedSegments) {
+function generateDiff(autoSegs, editedSegs) {
   const lines = [];
   lines.push('=== SRT整形 差分レポート ===');
   lines.push(`ファイル: ${currentFileName}`);
   lines.push(`日時: ${new Date().toLocaleString('ja-JP')}`);
-  lines.push(`自動整形セグメント数: ${autoSegments.length}`);
+  lines.push(`自動整形: ${autoSegs.length} セグメント`);
+  lines.push(`手動修正後: ${editedSegs.length} セグメント`);
   lines.push('');
 
+  // 自動整形のテキストを時間順に並べる
+  lines.push('--- 自動整形 ---');
+  autoSegs.forEach((seg, i) => {
+    lines.push(`[${i + 1}] ${seg.startTime} --> ${seg.endTime}`);
+    lines.push(seg.text);
+    lines.push('');
+  });
+
+  lines.push('--- 手動修正 ---');
+  editedSegs.forEach((seg, i) => {
+    lines.push(`[${i + 1}] ${seg.startTime} --> ${seg.endTime}`);
+    lines.push(seg.text);
+    lines.push('');
+  });
+
+  // 変更サマリー
+  lines.push('--- 変更サマリー ---');
+  lines.push(`セグメント数: ${autoSegs.length} → ${editedSegs.length} (${editedSegs.length - autoSegs.length >= 0 ? '+' : ''}${editedSegs.length - autoSegs.length})`);
+
+  // テキスト差分を検出（時間ベースで対応付け）
   let changeCount = 0;
+  const autoTexts = autoSegs.map(s => ({ time: s.startTime, text: s.text.trim() }));
+  const editTexts = editedSegs.map(s => ({ time: s.startTime, text: s.text.trim() }));
 
-  for (let i = 0; i < autoSegments.length; i++) {
-    const auto = autoSegments[i];
-    const edited = editedSegments[i];
-    if (!edited) continue;
-
-    const autoText = auto.text.trim();
-    const editedText = edited.text.trim();
-
-    if (autoText !== editedText) {
+  // 単純比較: 同じインデックスで違うテキストがあれば差分
+  const maxLen = Math.max(autoTexts.length, editTexts.length);
+  for (let i = 0; i < maxLen; i++) {
+    const a = autoTexts[i];
+    const e = editTexts[i];
+    if (!a && e) {
       changeCount++;
-      lines.push(`--- セグメント ${auto.index} [${auto.startTime} --> ${auto.endTime}] ---`);
-      lines.push(`自動: ${autoText}`);
-      lines.push(`修正: ${editedText}`);
-      lines.push('');
+      lines.push(`[+${i + 1}] 追加: ${e.text}`);
+    } else if (a && !e) {
+      changeCount++;
+      lines.push(`[-${i + 1}] 削除: ${a.text}`);
+    } else if (a.text !== e.text) {
+      changeCount++;
+      lines.push(`[${i + 1}] 変更:`);
+      lines.push(`  自動: ${a.text}`);
+      lines.push(`  修正: ${e.text}`);
     }
   }
 
-  if (changeCount === 0) {
-    lines.push('変更なし');
-  } else {
-    lines.push(`合計 ${changeCount} 箇所の修正`);
-  }
+  lines.push(`\n合計 ${changeCount} 箇所の変更`);
 
   return lines.join('\n');
 }
@@ -245,8 +384,10 @@ function generateDiff(autoSegments, editedSegments) {
 // ============================================================
 
 downloadBtn.addEventListener('click', () => {
-  const editedSegments = getEditedSegments();
-  const srt = getSegmentsToSRT()(editedSegments);
+  syncEditsFromDOM();
+  // インデックスを振り直し
+  editSegments.forEach((seg, i) => { seg.index = i + 1; });
+  const srt = getSegmentsToSRT()(editSegments);
   const outputName = currentFileName.replace(/\.srt$/i, '_formatted.srt');
   const blob = new Blob([srt], { type: 'text/plain; charset=utf-8' });
   const url = URL.createObjectURL(blob);
