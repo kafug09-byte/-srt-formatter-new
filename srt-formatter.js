@@ -207,6 +207,16 @@ function findAllParticlePositions(text) {
     }
   }
 
+  // 数字+単位の後に新しい数字が来る = 自然な境界
+  // 例: "100万円2年で" → "100万円" | "2年で..."
+  // 例: "50万円まで" の "まで" は助詞で別途検出済み
+  const unitChars = '万億円%年月日人名件回倍歳';
+  for (let i = 0; i < text.length - 1; i++) {
+    if (unitChars.includes(text[i]) && /\d/.test(text[i + 1])) {
+      positions.add(i + 1);
+    }
+  }
+
   return [...positions].sort((a, b) => a - b);
 }
 
@@ -283,6 +293,18 @@ function splitIntoSentences(text, gapPositions) {
         boundaries.add(splitAt);
       }
       from = idx + 1;
+    }
+  }
+
+  // 4. 数字+単位の後に新しい数字 = 文構造の変わり目
+  // 例: "100万円2年で" → "100万円" | "2年で..."（並列構造の切り替わり）
+  const unitCharsForBoundary = '万億円%';
+  for (let i = 0; i < text.length - 1; i++) {
+    if (unitCharsForBoundary.includes(text[i]) && /\d/.test(text[i + 1])) {
+      const pos = i + 1;
+      if (pos >= 5 && text.length - pos >= 5) {
+        boundaries.add(pos);
+      }
     }
   }
 
@@ -442,10 +464,12 @@ function scoreEnding(text) {
     if (text.endsWith(e)) return 12;
   }
 
-  // 主題マーカー（は/が）= 自然なセグメント境界
-  // 「なぜこの男は」「最も着目すべき点は」のような主題提示
+  // 主題マーカー「は」= 自然なセグメント境界（主題提示）
+  // 例: 「なぜこの男は」「最も着目すべき点は」
   if (text.endsWith('は') && text.length >= 5) return 8;
-  if (text.endsWith('が') && text.length >= 5) return 8;
+
+  // 主語マーカー「が」= 動詞との結びつきが強いので、はほど良い区切りではない
+  if (text.endsWith('が') && text.length >= 5) return 5;
 
   // 目的語マーカー（を）= 名詞句の完結
   if (text.endsWith('を') && text.length >= 5) return 7;
@@ -492,6 +516,16 @@ function scoreStart(text) {
     if (text.startsWith(p) && text.length > 1 && !/^[もがをにではへの][、。]/.test(text)) {
       return -8;
     }
+  }
+
+  // 動詞連用形で始まる（悪い - 前のフレーズの動詞部分が切り離されている）
+  // 例: 「加え5000名」「変えてきた」「使いこなす」
+  const verbContinuations = [
+    '加え', '変え', '使い', '使って', '取り', '受け', '出し', '持ち',
+    '作り', '見て', '聞い', '書い', '読ん', '行っ', '来て',
+  ];
+  for (const vc of verbContinuations) {
+    if (text.startsWith(vc)) return -8;
   }
 
   // 接続詞で始まる（良い - 明確な区切り）
@@ -562,8 +596,8 @@ function scoreLineBreakability(text) {
       }
     }
 
-    if (bestRatio > 0.5) return 4;   // 良いバランス
-    if (bestRatio > 0.3) return 1;   // まあまあ
+    if (bestRatio >= 0.5) return 4;   // 良いバランス
+    if (bestRatio >= 0.3) return 1;   // まあまあ
     return -3;                        // バランスが悪い
   }
 
