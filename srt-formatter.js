@@ -281,10 +281,23 @@ function splitIntoSentences(text, gapPositions) {
       let splitAt = idx + ending.length;
 
       // 文末の直後に接続語があれば、接続語の後ろまで含める
+      // ただし接続語が接続詞の一部（「し」→「しかし」）の場合は除外
       const remaining = text.substring(splitAt);
       for (const conn of POST_ENDING_CONNECTORS) {
         if (remaining.startsWith(conn)) {
-          splitAt += conn.length;
+          // 接続語が接続詞の先頭と一致する場合はスキップ
+          const afterConn = remaining.substring(conn.length);
+          let isPartOfConjunction = false;
+          const sortedConj2 = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
+          for (const conj of sortedConj2) {
+            if (conj.startsWith(conn) && remaining.startsWith(conj)) {
+              isPartOfConjunction = true;
+              break;
+            }
+          }
+          if (!isPartOfConjunction) {
+            splitAt += conn.length;
+          }
           break;
         }
       }
@@ -308,14 +321,26 @@ function splitIntoSentences(text, gapPositions) {
     }
   }
 
-  // ソートしてフィルタ（境界間は最低5文字）
+  // ソートしてフィルタ
+  // ギャップ境界（時間的な空白）は最優先で保持
+  // それ以外は最低5文字の間隔が必要
   const sorted = [...boundaries].sort((a, b) => a - b);
   const filtered = [];
   let lastBound = 0;
   for (const b of sorted) {
-    if (b - lastBound >= 5 && text.length - b >= 3) {
-      filtered.push(b);
-      lastBound = b;
+    const isGap = gapPositions.has(b);
+    if (isGap) {
+      // ギャップ境界は常に保持（最低3文字の間隔だけチェック）
+      if (b - lastBound >= 3 && text.length - b >= 3) {
+        filtered.push(b);
+        lastBound = b;
+      }
+    } else {
+      // 通常の境界は最低5文字の間隔が必要
+      if (b - lastBound >= 5 && text.length - b >= 3) {
+        filtered.push(b);
+        lastBound = b;
+      }
     }
   }
 
@@ -438,8 +463,8 @@ function scoreCandidate(segments) {
 function scoreLength(len) {
   // 長さスコアはフラットに: テロップとして許容できる範囲内は同じスコア
   // 分割の質は長さではなく「どこで切るか」で判断すべき
-  if (len >= 6 && len <= 28) return 8;    // テロップとして許容範囲（全て同スコア）
-  if (len >= 29 && len <= 35) return 3;   // 長いが表示可能
+  if (len >= 6 && len <= 35) return 8;    // テロップとして許容範囲（全て同スコア）
+  if (len >= 36 && len <= 42) return 3;   // 長いが表示可能
   if (len === 5) return -10;              // かなり短い
   if (len < 5) return -30;               // 表示の意味がない
   return -10;                             // 長すぎる
@@ -519,14 +544,18 @@ function scoreStart(text) {
   }
 
   // 動詞連用形で始まる（悪い - 前のフレーズの動詞部分が切り離されている）
-  // 例: 「加え5000名」「変えてきた」「使いこなす」
+  // 例: 「加え5000名」「変えてきた」「使いこなす」「出させられたのか」
   const verbContinuations = [
-    '加え', '変え', '使い', '使って', '取り', '受け', '出し', '持ち',
-    '作り', '見て', '聞い', '書い', '読ん', '行っ', '来て',
+    '加え', '変え', '使い', '使って', '取り', '受け', '出し', '出さ', '持ち',
+    '作り', '見て', '聞い', '書い', '読ん', '行っ', '来て', '立ち',
+    '生み', '務め', '輝い', '働い', '貯め', '増や', '得ら',
   ];
   for (const vc of verbContinuations) {
     if (text.startsWith(vc)) return -8;
   }
+
+  // 「という」「として」で始まる（前の名詞句の修飾が切れている）
+  if (text.startsWith('という') || text.startsWith('として') || text.startsWith('といった')) return -8;
 
   // 接続詞で始まる（良い - 明確な区切り）
   const sortedConj = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
@@ -559,6 +588,9 @@ function scoreCoherence(segments) {
 
     // 「の」で終わって名詞が続く（「起業の」+「本質」）
     if (current.endsWith('の') && current.length < 8) score -= 8;
+
+    // 「を」で終わり次が動詞 = 目的語と動詞の分断
+    if (current.endsWith('を') && /^[ぁ-ん]/.test(next)) score -= 8;
 
     // 極端に短いセグメントが連続
     if (current.length < 6 && next.length < 6) score -= 10;
@@ -703,7 +735,7 @@ function formatSegments(segments, options = {}) {
     shouldRemoveFillers = true,
   } = options;
 
-  const MIN_SEG_CHARS = 5;
+  const MIN_SEG_CHARS = 4;
   const GAP_THRESHOLD_MS = 300;
 
   // ============================================================
@@ -718,6 +750,19 @@ function formatSegments(segments, options = {}) {
     let text = seg.text.replace(/\n/g, ' ').trim();
     if (shouldRemovePunctuation) text = removePunctuation(text);
     if (shouldRemoveFillers) text = removeFillers(text);
+    // 全角スペースの位置を文境界として記録してから除去
+    // Premiereの文字起こしは全角スペースで文の区切りを示すことがある
+    var halfClean = text.replace(/[\s]+/g, ''); // 半角スペースだけ先に除去
+    var cleanCount = 0;
+    for (var ci = 0; ci < halfClean.length; ci++) {
+      if (halfClean[ci] === '\u3000') {
+        if (cleanCount > 0) {
+          gapPositions.add(fullText.length + cleanCount);
+        }
+      } else {
+        cleanCount++;
+      }
+    }
     text = text.replace(/[\s\u3000]+/g, '').trim();
 
     if (text.length === 0) continue;
@@ -794,20 +839,35 @@ function formatSegments(segments, options = {}) {
   const merged = [];
   for (let i = 0; i < result.length; i++) {
     const seg = result[i];
-    const textLen = seg.text.replace(/\n/g, '').length;
+    const flatText = seg.text.replace(/\n/g, '');
+    const textLen = flatText.length;
 
-    if (textLen < MIN_SEG_CHARS && i + 1 < result.length) {
-      // 次のセグメントに結合
-      const next = result[i + 1];
-      const combined = seg.text.replace(/\n/g, '') + next.text.replace(/\n/g, '');
-      next.text = addLineBreaks(combined);
-      next.startTime = seg.startTime;
-    } else if (textLen < MIN_SEG_CHARS && merged.length > 0) {
-      // 前のセグメントに結合
-      const prev = merged[merged.length - 1];
-      const combined = prev.text.replace(/\n/g, '') + seg.text.replace(/\n/g, '');
-      prev.text = addLineBreaks(combined);
-      prev.endTime = seg.endTime;
+    if (textLen <= MIN_SEG_CHARS) {
+      // 短いセグメントの結合先を判断
+      // 文末表現（です、ます等）で終わる場合 → 前に結合（文の結びだから）
+      const endsWithSentenceEnd = /(?:です|ます|ました|ません|のか|した|った|ている|ていた)$/.test(flatText);
+
+      if (endsWithSentenceEnd && merged.length > 0) {
+        // 前のセグメントに結合
+        const prev = merged[merged.length - 1];
+        const combined = prev.text.replace(/\n/g, '') + flatText;
+        prev.text = addLineBreaks(combined);
+        prev.endTime = seg.endTime;
+      } else if (i + 1 < result.length) {
+        // 次のセグメントに結合
+        const next = result[i + 1];
+        const combined = flatText + next.text.replace(/\n/g, '');
+        next.text = addLineBreaks(combined);
+        next.startTime = seg.startTime;
+      } else if (merged.length > 0) {
+        // 最後のセグメント → 前に結合
+        const prev = merged[merged.length - 1];
+        const combined = prev.text.replace(/\n/g, '') + flatText;
+        prev.text = addLineBreaks(combined);
+        prev.endTime = seg.endTime;
+      } else {
+        merged.push({ ...seg });
+      }
     } else {
       merged.push({ ...seg });
     }
