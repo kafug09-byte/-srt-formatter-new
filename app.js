@@ -1,8 +1,8 @@
 /**
  * SRT整形ツール - UIコントローラー
+ * 編集可能な整形結果 + 差分出力機能
  */
 
-// SRTFormatter関数への参照（使用時に取得）
 function getParseSRT() { return window.SRTFormatter.parseSRT; }
 function getFormatSegments() { return window.SRTFormatter.formatSegments; }
 function getSegmentsToSRT() { return window.SRTFormatter.segmentsToSRT; }
@@ -20,7 +20,11 @@ const previewSection = document.getElementById('previewSection');
 const previewContent = document.getElementById('previewContent');
 const statsEl = document.getElementById('stats');
 const downloadBtn = document.getElementById('downloadBtn');
-const tabs = document.querySelectorAll('.tab');
+const diffBtn = document.getElementById('diffBtn');
+const diffModal = document.getElementById('diffModal');
+const diffOutput = document.getElementById('diffOutput');
+const closeDiffModal = document.getElementById('closeDiffModal');
+const copyDiffBtn = document.getElementById('copyDiffBtn');
 
 // 設定
 const charsPerLineInput = document.getElementById('charsPerLine');
@@ -39,7 +43,7 @@ document.addEventListener('drop', (e) => e.preventDefault());
 // 状態
 // ============================================================
 let originalSegments = null;
-let formattedSegments = null;
+let formattedSegments = null;    // 自動整形の結果（変更しない）
 let originalSRT = '';
 let formattedSRT = '';
 let currentFileName = '';
@@ -49,7 +53,6 @@ let currentFileName = '';
 // ============================================================
 
 uploadArea.addEventListener('click', (e) => {
-  // ファイル選択ボタン自体をクリックした場合は二重発火を防ぐ
   if (e.target.tagName === 'INPUT') return;
   fileInput.click();
 });
@@ -71,7 +74,6 @@ uploadArea.addEventListener('drop', (e) => {
   uploadArea.classList.remove('dragover');
   const file = e.dataTransfer.files[0];
   if (file) {
-    // 拡張子チェックを緩くする（大文字小文字問わず、なくてもテキストファイルならOK）
     const name = file.name.toLowerCase();
     if (name.endsWith('.srt') || file.type === 'text/plain' || file.type === '') {
       loadFile(file);
@@ -97,7 +99,6 @@ function loadFile(file) {
   reader.onload = (e) => {
     originalSRT = e.target.result;
     originalSegments = getParseSRT()(originalSRT);
-
     uploadArea.style.display = 'none';
     fileInfo.style.display = 'flex';
     fileName.textContent = `${file.name}（${originalSegments.length}セグメント）`;
@@ -128,115 +129,126 @@ formatBtn.addEventListener('click', () => {
   if (!originalSegments) return;
 
   const options = {
-    charsPerLine: parseInt(charsPerLineInput.value, 10) || 18,
-    maxLines: parseInt(maxLinesSelect.value, 10) || 2,
     shouldRemovePunctuation: removePunctuationCb.checked,
     shouldRemoveFillers: removeFillersCb.checked,
-    shouldSplitSegments: splitSegmentsCb.checked,
   };
 
   formattedSegments = getFormatSegments()(originalSegments, options);
   formattedSRT = getSegmentsToSRT()(formattedSegments);
 
   // 統計
-  const splitCount = formattedSegments.length - originalSegments.length;
   statsEl.innerHTML = `
-    <div class="stat-item">元セグメント数: <span class="stat-value">${originalSegments.length}</span></div>
-    <div class="stat-item">整形後セグメント数: <span class="stat-value">${formattedSegments.length}</span></div>
-    ${splitCount > 0 ? `<div class="stat-item">分割されたセグメント: <span class="stat-value">+${splitCount}</span></div>` : ''}
+    <div class="stat-item">元: <span class="stat-value">${originalSegments.length}</span>セグメント</div>
+    <div class="stat-item">整形後: <span class="stat-value">${formattedSegments.length}</span>セグメント</div>
   `;
 
-  // プレビュー表示
   previewSection.style.display = '';
-  showTab('after');
+  renderEditableSegments();
 });
 
 // ============================================================
-// タブ切り替え
+// 編集可能なセグメント表示
 // ============================================================
 
-tabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    tabs.forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    showTab(tab.dataset.tab);
-  });
-});
-
-function showTab(tabName) {
-  if (tabName === 'after') {
-    renderSegments(formattedSegments, previewContent);
-  } else if (tabName === 'before') {
-    renderSegments(originalSegments, previewContent);
-  } else if (tabName === 'diff') {
-    renderDiff(originalSegments, formattedSegments, previewContent);
-  }
-}
-
-function renderSegments(segments, container) {
-  container.innerHTML = segments.map(seg =>
-    `<div class="segment">` +
-    `<span class="index">${seg.index}</span>\n` +
-    `<span class="timestamp">${seg.startTime} --> ${seg.endTime}</span>\n` +
-    `<span class="text">${escapeHtml(seg.text)}</span>` +
+function renderEditableSegments() {
+  previewContent.innerHTML = formattedSegments.map((seg, i) =>
+    `<div class="segment editable-segment" data-index="${i}">` +
+    `<span class="index">${seg.index}</span>` +
+    `<span class="timestamp">${seg.startTime} --> ${seg.endTime}</span>` +
+    `<div class="text editable-text" contenteditable="true" data-index="${i}">${escapeHtml(seg.text)}</div>` +
     `</div>`
   ).join('');
 }
 
-function renderDiff(before, after, container) {
-  let html = '';
+// ============================================================
+// 差分出力
+// ============================================================
 
-  // 元セグメントと整形後を並べて表示
-  let afterIdx = 0;
+diffBtn.addEventListener('click', () => {
+  const editedSegments = getEditedSegments();
+  const diffText = generateDiff(formattedSegments, editedSegments);
+  diffOutput.value = diffText;
+  diffModal.style.display = 'flex';
+});
 
-  for (let i = 0; i < before.length; i++) {
-    const orig = before[i];
-    const origText = orig.text.replace(/\n/g, ' ').trim();
+closeDiffModal.addEventListener('click', () => {
+  diffModal.style.display = 'none';
+});
 
-    html += `<div class="segment">`;
-    html += `<div class="removed"><span class="index">${orig.index}</span> ${escapeHtml(orig.text)}</div>`;
+copyDiffBtn.addEventListener('click', () => {
+  diffOutput.select();
+  document.execCommand('copy');
+  copyDiffBtn.textContent = 'コピーしました!';
+  setTimeout(() => { copyDiffBtn.textContent = '差分をコピー'; }, 2000);
+});
 
-    // 対応する整形後セグメントを探す
-    while (afterIdx < after.length) {
-      const fmt = after[afterIdx];
-      const fmtStartMs = window.SRTFormatter.timeToMs(fmt.startTime);
-      const origEndMs = window.SRTFormatter.timeToMs(orig.endTime);
-
-      if (fmtStartMs >= origEndMs && afterIdx > 0) break;
-
-      html += `<div class="added"><span class="index">${fmt.index}</span> <span class="timestamp">${fmt.startTime} --> ${fmt.endTime}</span>\n${escapeHtml(fmt.text)}</div>`;
-      afterIdx++;
-
-      const nextOrigStartMs = (i + 1 < before.length) ? window.SRTFormatter.timeToMs(before[i + 1].startTime) : Infinity;
-      if (afterIdx < after.length) {
-        const nextFmtStartMs = window.SRTFormatter.timeToMs(after[afterIdx].startTime);
-        if (nextFmtStartMs >= nextOrigStartMs) break;
-      }
+/**
+ * 画面上の編集済みテキストを取得
+ */
+function getEditedSegments() {
+  const editables = previewContent.querySelectorAll('.editable-text');
+  const edited = [];
+  editables.forEach((el, i) => {
+    if (i < formattedSegments.length) {
+      edited.push({
+        index: formattedSegments[i].index,
+        startTime: formattedSegments[i].startTime,
+        endTime: formattedSegments[i].endTime,
+        text: el.innerText.trim(),
+      });
     }
-
-    html += `</div>`;
-  }
-
-  container.innerHTML = html;
+  });
+  return edited;
 }
 
-function escapeHtml(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+/**
+ * 自動整形と手動修正の差分テキストを生成
+ */
+function generateDiff(autoSegments, editedSegments) {
+  const lines = [];
+  lines.push('=== SRT整形 差分レポート ===');
+  lines.push(`ファイル: ${currentFileName}`);
+  lines.push(`日時: ${new Date().toLocaleString('ja-JP')}`);
+  lines.push(`自動整形セグメント数: ${autoSegments.length}`);
+  lines.push('');
+
+  let changeCount = 0;
+
+  for (let i = 0; i < autoSegments.length; i++) {
+    const auto = autoSegments[i];
+    const edited = editedSegments[i];
+    if (!edited) continue;
+
+    const autoText = auto.text.trim();
+    const editedText = edited.text.trim();
+
+    if (autoText !== editedText) {
+      changeCount++;
+      lines.push(`--- セグメント ${auto.index} [${auto.startTime} --> ${auto.endTime}] ---`);
+      lines.push(`自動: ${autoText}`);
+      lines.push(`修正: ${editedText}`);
+      lines.push('');
+    }
+  }
+
+  if (changeCount === 0) {
+    lines.push('変更なし');
+  } else {
+    lines.push(`合計 ${changeCount} 箇所の修正`);
+  }
+
+  return lines.join('\n');
 }
 
 // ============================================================
-// ダウンロード
+// ダウンロード（編集後の内容を反映）
 // ============================================================
 
 downloadBtn.addEventListener('click', () => {
-  if (!formattedSRT) return;
-
+  const editedSegments = getEditedSegments();
+  const srt = getSegmentsToSRT()(editedSegments);
   const outputName = currentFileName.replace(/\.srt$/i, '_formatted.srt');
-  const blob = new Blob([formattedSRT], { type: 'text/plain; charset=utf-8' });
+  const blob = new Blob([srt], { type: 'text/plain; charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -246,3 +258,15 @@ downloadBtn.addEventListener('click', () => {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 });
+
+// ============================================================
+// ユーティリティ
+// ============================================================
+
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}

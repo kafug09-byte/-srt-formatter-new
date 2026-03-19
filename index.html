@@ -54,7 +54,7 @@
       <div class="setting-row checkbox-row">
         <label>
           <input type="checkbox" id="splitSegments" checked>
-          言い切り+接続詞でセグメント分割
+          セグメント自動分割
         </label>
       </div>
     </div>
@@ -62,15 +62,25 @@
     <button class="format-btn" id="formatBtn" disabled>整形する</button>
 
     <div class="preview-section" id="previewSection" style="display:none;">
-      <h2>プレビュー</h2>
-      <div class="preview-tabs">
-        <button class="tab active" data-tab="after">整形後</button>
-        <button class="tab" data-tab="before">整形前</button>
-        <button class="tab" data-tab="diff">変更箇所</button>
-      </div>
+      <h2>整形結果 <span class="edit-hint">（テキストを直接編集できます）</span></h2>
       <div class="preview-content" id="previewContent"></div>
       <div class="stats" id="stats"></div>
-      <button class="download-btn" id="downloadBtn">整形済みSRTをダウンロード</button>
+      <div class="action-buttons">
+        <button class="download-btn" id="downloadBtn">整形済みSRTをダウンロード</button>
+        <button class="diff-btn" id="diffBtn">差分を出力</button>
+      </div>
+    </div>
+
+    <!-- 差分表示モーダル -->
+    <div class="diff-modal" id="diffModal" style="display:none;">
+      <div class="diff-modal-content">
+        <div class="diff-modal-header">
+          <h2>自動整形 vs 手動修正 の差分</h2>
+          <button id="closeDiffModal" class="close-btn">✕</button>
+        </div>
+        <textarea id="diffOutput" readonly></textarea>
+        <button id="copyDiffBtn" class="download-btn">差分をコピー</button>
+      </div>
     </div>
   </div>
 

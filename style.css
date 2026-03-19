@@ -327,6 +327,131 @@ h1 {
   background: #2a4a2a;
 }
 
+/* Action Buttons */
+.action-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.action-buttons .download-btn,
+.action-buttons .diff-btn {
+  flex: 1;
+  margin-top: 0;
+}
+
+.diff-btn {
+  display: block;
+  padding: 16px;
+  background: #3a1a3a;
+  color: #ff80ff;
+  border: 1px solid #5a2a5a;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.diff-btn:hover {
+  background: #4a2a4a;
+}
+
+/* Editable Segments */
+.editable-segment {
+  position: relative;
+}
+
+.editable-text {
+  outline: none;
+  cursor: text;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.15s;
+  min-height: 1.5em;
+}
+
+.editable-text:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.editable-text:focus {
+  background: rgba(74, 158, 255, 0.08);
+  box-shadow: 0 0 0 1px rgba(74, 158, 255, 0.3);
+}
+
+.edit-hint {
+  font-size: 12px;
+  color: #666;
+  font-weight: 400;
+}
+
+/* Diff Modal */
+.diff-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 20px;
+}
+
+.diff-modal-content {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 24px;
+  width: 100%;
+  max-width: 700px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.diff-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.diff-modal-header h2 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.close-btn:hover {
+  color: #fff;
+}
+
+#diffOutput {
+  flex: 1;
+  background: #0a0a0a;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 16px;
+  color: #e0e0e0;
+  font-family: 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: none;
+  min-height: 300px;
+}
+
 /* Scrollbar */
 .preview-content::-webkit-scrollbar {
   width: 6px;
