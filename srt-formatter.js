@@ -10,13 +10,22 @@
 // 定数
 // ============================================================
 
-// 接続詞リスト（言い切り後にこれが来たら分割対象）
+// 節末接続詞リスト（この語の「後ろ」で分割 — "〜けどXXX" → "〜けど" | "XXX"）
+// 十分な前後テキストがある場合のみ適用
+const TRAILING_CONJUNCTIONS = [
+  'けど', 'けれど', 'けども',
+  'ので', 'のに',
+  'から',
+];
+
+// 接続詞リスト（この語の「前」で分割 — "XXXそしてYYY" → "XXX" | "そしてYYY"）
 const CONJUNCTIONS = [
   'しかし', 'しかも',
   'でも', 'でもね', 'でもさ',
   'だから', 'だからこそ', 'だからね',
   'なので', 'なのでね',
   'ただ', 'ただね', 'ただし',
+  'そして', 'そしたら', 'そこで', 'そこから',
   'それで', 'それでね', 'それから', 'それと', 'それに', 'それでも', 'それなのに',
   'あと', 'あとは', 'あとね',
   'で、', 'で ',
@@ -94,11 +103,13 @@ const FILLER_PATTERNS = [
 ];
 
 // 助詞リスト（改行の候補位置：助詞の後ろ）
+// 単体の1文字助詞は単語内に出やすいので長い助詞を優先
 const PARTICLES = [
-  'は', 'が', 'を', 'に', 'で', 'と', 'も', 'の', 'から', 'まで',
-  'より', 'へ', 'けど', 'けれど', 'ので', 'のに', 'って', 'ては',
-  'では', 'には', 'とは', 'からは', 'っていう', 'という', 'ような',
-  'ように', 'みたいな', 'みたいに', 'として',
+  'からは', 'までは', 'っていう', 'という', 'ような', 'ように',
+  'みたいな', 'みたいに', 'として', 'ので', 'のに', 'けど', 'けれど',
+  'ては', 'では', 'には', 'とは', 'から', 'まで', 'より', 'って',
+  'は', 'が', 'を', 'に', 'で', 'も', 'へ',
+  // 'と' と 'の' は単語内に出やすいので除外
 ];
 
 // ============================================================
@@ -212,129 +223,73 @@ function findSplitPoints(text, charsPerLine = 18, maxLines = 2) {
     }
   }
 
-  // --- 1. 言い切り+接続詞パターン ---
+  const MIN_BEFORE_CONJ = 8;
+  const MIN_AFTER_CONJ = 6;
+
+  // --- 0. 節末接続詞パターン（"〜けどXXX" → "〜けど" | "XXX"）---
+  const sortedTrailing = [...TRAILING_CONJUNCTIONS].sort((a, b) => b.length - a.length);
+  for (const conj of sortedTrailing) {
+    let searchFrom = MIN_BEFORE_CONJ;
+    while (true) {
+      const idx = text.indexOf(conj, searchFrom);
+      if (idx === -1) break;
+      const splitAfter = idx + conj.length;
+      // スペースをスキップ
+      let actualSplit = splitAfter;
+      while (actualSplit < text.length && /[\s\u3000]/.test(text[actualSplit])) actualSplit++;
+
+      const before = text.substring(0, splitAfter).trim();
+      const after = text.substring(actualSplit).trim();
+      if (before.length >= MIN_BEFORE_CONJ && after.length >= MIN_AFTER_CONJ) {
+        addSplitPoint(actualSplit);
+      }
+      searchFrom = splitAfter;
+    }
+  }
+
+  // --- 1. 接続詞パターン（"XXXそしてYYY" → "XXX" | "そしてYYY"）---
   const sortedConj = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
   for (const conj of sortedConj) {
     let searchFrom = 0;
     while (true) {
       const idx = text.indexOf(conj, searchFrom);
       if (idx === -1) break;
-      if (idx === 0) {
+      if (idx < MIN_BEFORE_CONJ) {
         searchFrom = idx + conj.length;
         continue;
       }
       const before = text.substring(0, idx).trim();
-      if (before.length > 0 && isEndOfSentence(before)) {
+      const after = text.substring(idx).trim();
+      if (before.length >= MIN_BEFORE_CONJ && after.length >= MIN_AFTER_CONJ) {
         addSplitPoint(idx);
       }
       searchFrom = idx + conj.length;
     }
   }
 
-  // --- 2. 言い切り単体（スペースの前が言い切りなら分割） ---
+  // --- 2. 言い切り+スペースパターン ---
+  // スペースの前が明確な言い切りの場合のみ分割（テ形・連用形は除外）
   const spaceRegex = /[\s\u3000]+/g;
   let spMatch;
   while ((spMatch = spaceRegex.exec(text)) !== null) {
     const idx = spMatch.index;
     if (idx === 0) continue;
     const before = text.substring(0, idx).trim();
-    if (before.length > 0 && isEndOfSentence(before)) {
-      const afterIdx = idx + spMatch[0].length;
+    const afterIdx = idx + spMatch[0].length;
+    const after = text.substring(afterIdx).trim();
+
+    // テ形・連用形など接続的な語尾は分割しない
+    const continuativeEndings = /[てでもがをにはから]$|ていても$|ながら$|として$|として$/;
+    if (continuativeEndings.test(before)) continue;
+
+    if (before.length >= 8 && after.length >= 6 && isEndOfSentence(before)) {
       addSplitPoint(afterIdx);
-    }
-  }
-
-  // --- 3. 長すぎるセグメントの強制分割 ---
-  // 既存の分割点でパートに分けて、まだ長いものをさらに分割
-  const sorted = [...splitPoints].sort((a, b) => a - b);
-  const boundaries = [0, ...sorted, text.length];
-
-  for (let i = 0; i < boundaries.length - 1; i++) {
-    const partStart = boundaries[i];
-    const partEnd = boundaries[i + 1];
-    const part = text.substring(partStart, partEnd).trim();
-
-    if (part.length > maxCharsPerSegment) {
-      // この部分をさらに分割
-      const subSplits = forceSplitLongText(text, partStart, partEnd, maxCharsPerSegment);
-      for (const sp of subSplits) {
-        addSplitPoint(sp);
-      }
     }
   }
 
   return splitPoints.sort((a, b) => a - b);
 }
 
-/**
- * 長すぎるテキストを強制的に分割する（言い切りまたは助詞の後ろで切る）
- */
-function forceSplitLongText(fullText, start, end, maxChars) {
-  const splits = [];
-  let pos = start;
-
-  while (pos < end) {
-    const remaining = fullText.substring(pos, end).trim();
-    if (remaining.length <= maxChars) break;
-
-    // maxChars付近で言い切りパターンを探す
-    let bestSplit = -1;
-
-    // まず言い切りパターンを探す（目安文字数の範囲内で）
-    for (let i = pos + 8; i < Math.min(pos + maxChars + 5, end); i++) {
-      const textUpTo = fullText.substring(pos, i).trim();
-      if (isEndOfSentence(textUpTo)) {
-        // 次の文字がスペースか、接続詞の始まりか
-        const nextChar = fullText.substring(i, i + 1);
-        if (/[\s\u3000]/.test(nextChar) || i === end) {
-          bestSplit = i;
-          // スペースをスキップ
-          while (bestSplit < end && /[\s\u3000]/.test(fullText[bestSplit])) {
-            bestSplit++;
-          }
-        }
-      }
-    }
-
-    // 言い切りが見つからなければ助詞の後ろで切る
-    if (bestSplit === -1 || bestSplit <= pos) {
-      const searchText = fullText.substring(pos, Math.min(pos + maxChars + 5, end));
-      const sortedParticles = [...PARTICLES].sort((a, b) => b.length - a.length);
-      let bestParticlePos = -1;
-      let bestDist = Infinity;
-      const target = maxChars;
-
-      for (let i = Math.max(0, target - 10); i < Math.min(searchText.length, target + 5); i++) {
-        for (const p of sortedParticles) {
-          if (searchText.substring(i).startsWith(p)) {
-            const cutPos = i + p.length;
-            const dist = Math.abs(cutPos - target);
-            if (dist < bestDist) {
-              bestDist = dist;
-              bestParticlePos = cutPos;
-            }
-          }
-        }
-      }
-
-      if (bestParticlePos > 0) {
-        bestSplit = pos + bestParticlePos;
-      } else {
-        // 最終手段：目安文字数で切る
-        bestSplit = pos + maxChars;
-      }
-    }
-
-    if (bestSplit > pos && bestSplit < end) {
-      splits.push(bestSplit);
-      pos = bestSplit;
-    } else {
-      break;
-    }
-  }
-
-  return splits;
-}
 
 /**
  * テキストが言い切りで終わっているかチェック
@@ -356,51 +311,34 @@ function isEndOfSentence(text) {
  * @param {number} maxLines - 最大行数
  * @returns {string} 改行入りテキスト
  */
-function addLineBreaks(text, charsPerLine = 18, maxLines = 2) {
-  // 既存の改行を除去して1行にする
+function addLineBreaks(text, charsPerLine = 15, maxLines = 2) {
   const flat = text.replace(/\n/g, '').trim();
 
-  // 目安文字数以下ならそのまま
+  // 1行に収まるならそのまま
   if (flat.length <= charsPerLine) {
     return flat;
   }
 
-  // 2行の場合、なるべく均等に分ける（上下のバランスを取る）
-  if (maxLines === 2) {
-    // 半分付近を目安に、ただし1行目は目安文字数を超えない
-    const halfTarget = Math.ceil(flat.length / 2);
-    const target = Math.min(Math.max(halfTarget, 8), charsPerLine);
-    const breakPoint = findNaturalBreak(flat, target);
+  // 均等に2分割する目標位置：文字数の半分を基準に
+  // 「charsPerLine」は参考にしない（均等優先）
+  const target = Math.ceil(flat.length / 2);
+  const breakPoint = findNaturalBreak(flat, target);
 
-    // 残りが3文字以下、または1行目が4文字以下なら改行しない
-    const line2len = flat.length - breakPoint;
-    if (line2len <= 3 || breakPoint <= 4) {
-      return flat;
-    }
+  const line1 = flat.substring(0, breakPoint).trim();
+  const line2 = flat.substring(breakPoint).trim();
 
-    return flat.substring(0, breakPoint) + '\n' + flat.substring(breakPoint);
+  // 短すぎる行・バランスが悪い行は作らない（1行目が全体の30%未満ならNG）
+  const minLen = Math.max(4, Math.floor(flat.length * 0.3));
+  if (line1.length < minLen || line2.length < minLen) {
+    return flat;
   }
 
-  const lines = [];
-  let remaining = flat;
-
-  for (let lineNum = 0; lineNum < maxLines; lineNum++) {
-    if (lineNum === maxLines - 1) {
-      lines.push(remaining);
-      break;
-    }
-
-    if (remaining.length <= charsPerLine) {
-      lines.push(remaining);
-      break;
-    }
-
-    const breakPoint = findNaturalBreak(remaining, charsPerLine);
-    lines.push(remaining.substring(0, breakPoint));
-    remaining = remaining.substring(breakPoint);
+  // 2行以内なら改行して返す
+  if (maxLines >= 2) {
+    return line1 + '\n' + line2;
   }
 
-  return lines.join('\n');
+  return flat;
 }
 
 /**
@@ -530,13 +468,23 @@ function formatSegments(segments, options = {}) {
     });
   }
 
-  // インデックス振り直し
-  result = result.map((seg, i) => ({
-    ...seg,
-    index: i + 1,
-  }));
+  // 短すぎるセグメント（6文字未満）を前のセグメントに結合
+  const MIN_SEG_CHARS = 6;
+  const merged = [];
+  for (const seg of result) {
+    const textLen = seg.text.replace(/\n/g, '').trim().length;
+    if (textLen < MIN_SEG_CHARS && merged.length > 0) {
+      const prev = merged[merged.length - 1];
+      const combinedText = prev.text.replace(/\n/g, '') + seg.text.replace(/\n/g, '');
+      prev.text = addLineBreaks(combinedText, charsPerLine, maxLines);
+      prev.endTime = seg.endTime;
+    } else {
+      merged.push({ ...seg });
+    }
+  }
 
-  return result;
+  // インデックス振り直し
+  return merged.map((seg, i) => ({ ...seg, index: i + 1 }));
 }
 
 // ============================================================
