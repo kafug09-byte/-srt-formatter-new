@@ -174,7 +174,64 @@ function findBestParticleNear(text, target, margin = 6) {
 }
 
 // ============================================================
-// セグメント分割（メインロジック）
+// 文の境界検出（大分割）
+// ============================================================
+
+/**
+ * 結合テキストを「文」単位に分割する
+ * 接続詞の前、文末パターンの後で分割
+ */
+function splitIntoSentences(text) {
+  const splitPoints = new Set();
+
+  // 1. 接続詞の前で分割
+  const sortedConj = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
+  for (const conj of sortedConj) {
+    let from = 5; // 先頭付近はスキップ
+    while (true) {
+      const idx = text.indexOf(conj, from);
+      if (idx === -1) break;
+      if (idx >= 5) splitPoints.add(idx);
+      from = idx + conj.length;
+    }
+  }
+
+  // 2. 文末パターンの後で分割
+  const endings = ['のか', 'ました', 'ません', 'ます', 'でした', 'です', 'ている', 'ていた'];
+  // 長い順に
+  endings.sort((a, b) => b.length - a.length);
+  for (const ending of endings) {
+    let from = 5;
+    while (true) {
+      const idx = text.indexOf(ending, from);
+      if (idx === -1) break;
+      const splitAt = idx + ending.length;
+      if (splitAt > 5 && text.length - splitAt > 5) {
+        splitPoints.add(splitAt);
+      }
+      from = idx + 1;
+    }
+  }
+
+  // ソートして分割
+  const sorted = [...splitPoints].sort((a, b) => a - b);
+  if (sorted.length === 0) return [text];
+
+  const sentences = [];
+  let lastIdx = 0;
+  for (const sp of sorted) {
+    const part = text.substring(lastIdx, sp).trim();
+    if (part.length > 0) sentences.push(part);
+    lastIdx = sp;
+  }
+  const last = text.substring(lastIdx).trim();
+  if (last.length > 0) sentences.push(last);
+
+  return sentences;
+}
+
+// ============================================================
+// セグメント分割（テロップ単位の小分割）
 // ============================================================
 
 /**
@@ -193,18 +250,25 @@ function splitIntoTelopUnits(text, charsPerLine, maxLines) {
       break;
     }
 
-    // charsPerLine付近で助詞による分割を試みる
-    const target = Math.min(charsPerLine, Math.ceil(remaining.length / 2));
-    let splitPos = findBestParticleNear(remaining, target, 6);
+    // 左から順に助詞を探し、5文字以上の単位を切り出す
+    // charsPerLine以内で最も右にある助詞位置を選ぶ（なるべく長い単位に）
+    const positions = findAllParticlePositions(remaining);
+    let splitPos = -1;
 
-    // 接続詞もチェック
+    // 5文字以上 & charsPerLine+3以内の助詞位置で、最も右のものを選ぶ
+    for (const pos of positions) {
+      if (pos >= 5 && pos <= charsPerLine + 3 && remaining.length - pos >= 1) {
+        splitPos = pos;
+      }
+    }
+
+    // 接続詞もチェック（接続詞の前で切る）
     const sortedConj = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
     for (const conj of sortedConj) {
       const idx = remaining.indexOf(conj);
-      if (idx >= 5 && idx <= target + 7 && remaining.length - idx >= 5) {
-        const dist = Math.abs(idx - target);
-        const currentDist = splitPos === -1 ? Infinity : Math.abs(splitPos - target);
-        if (dist < currentDist) {
+      if (idx >= 5 && idx <= charsPerLine + 3 && remaining.length - idx >= 1) {
+        // 接続詞位置がsplitPosより手前 or splitPos未設定なら採用
+        if (splitPos === -1 || idx < splitPos) {
           splitPos = idx;
         }
       }
@@ -219,8 +283,9 @@ function splitIntoTelopUnits(text, charsPerLine, maxLines) {
       break;
     } else {
       // 強制分割（助詞なし + 2行に収まらない）
-      units.push(remaining.substring(0, target).trim());
-      remaining = remaining.substring(target).trim();
+      const forcePos = charsPerLine;
+      units.push(remaining.substring(0, forcePos).trim());
+      remaining = remaining.substring(forcePos).trim();
     }
   }
 
@@ -272,66 +337,103 @@ function formatSegments(segments, options = {}) {
     shouldSplitSegments = true,
   } = options;
 
-  const MAX_SEG_CHARS = charsPerLine + 2; // これを超えたら分割検討
-  const MIN_SEG_CHARS = 5; // これ未満は結合
+  const MIN_SEG_CHARS = 5;
 
-  let result = [];
+  // ============================================================
+  // STEP 1: 全セグメントを1つの文字列に結合し、文字→時間のマッピングを作成
+  // ============================================================
+  let fullText = '';
+  const charTimeMap = []; // charTimeMap[i] = { ms: ミリ秒 } for fullText[i]
 
   for (const seg of segments) {
     let text = seg.text.replace(/\n/g, ' ').trim();
-
     if (shouldRemovePunctuation) text = removePunctuation(text);
     if (shouldRemoveFillers) text = removeFillers(text);
-    text = text.replace(/[\s\u3000]+/g, ' ').trim();
+    text = text.replace(/[\s\u3000]+/g, '').trim(); // スペースも除去して純粋なテキストに
 
     if (text.length === 0) continue;
 
     const startMs = timeToMs(seg.startTime);
     const endMs = timeToMs(seg.endTime);
+    const duration = endMs - startMs;
 
-    if (shouldSplitSegments && text.length > MAX_SEG_CHARS) {
-      // テロップ単位に分割
-      const units = splitIntoTelopUnits(text, charsPerLine, maxLines);
-      const totalChars = text.replace(/\s/g, '').length;
-      const totalDuration = endMs - startMs;
-      let currentMs = startMs;
-
-      for (const unit of units) {
-        const unitChars = unit.replace(/\s/g, '').length;
-        const unitDuration = Math.round((unitChars / totalChars) * totalDuration);
-        const unitEnd = Math.min(currentMs + unitDuration, endMs);
-
-        result.push({
-          startTime: msToTime(currentMs),
-          endTime: msToTime(unitEnd),
-          text: addLineBreaks(unit, charsPerLine, maxLines),
-        });
-        currentMs = unitEnd;
-      }
-    } else {
-      // 短いセグメント: 改行のみ
-      result.push({
-        startTime: seg.startTime,
-        endTime: seg.endTime,
-        text: addLineBreaks(text, charsPerLine, maxLines),
-      });
+    // 各文字に時間を割り当て（線形補間）
+    for (let i = 0; i < text.length; i++) {
+      const charMs = startMs + Math.round((i / text.length) * duration);
+      charTimeMap.push({ ms: charMs });
     }
+
+    fullText += text;
   }
 
-  // 短すぎるセグメントを次のセグメントに結合
+  if (fullText.length === 0) return [];
+
+  // 最後の文字の終了時間
+  const lastSeg = segments[segments.length - 1];
+  const totalEndMs = timeToMs(lastSeg.endTime);
+
+  // ============================================================
+  // STEP 2: 文の境界で大分割 → 各文をテロップ単位に小分割
+  // ============================================================
+  let units;
+  if (shouldSplitSegments) {
+    // まず文の境界で分割
+    const sentences = splitIntoSentences(fullText);
+    // 各文をテロップ単位に分割
+    units = [];
+    for (const sentence of sentences) {
+      if (sentence.length <= charsPerLine) {
+        units.push(sentence);
+      } else {
+        const telopUnits = splitIntoTelopUnits(sentence, charsPerLine, maxLines);
+        units.push(...telopUnits);
+      }
+    }
+  } else {
+    units = [fullText];
+  }
+
+  // ============================================================
+  // STEP 3: 各テロップ単位にタイムコードを割り当て
+  // ============================================================
+  let result = [];
+  let charPos = 0;
+
+  for (const unit of units) {
+    const unitLen = unit.length;
+    if (unitLen === 0) continue;
+
+    const startCharPos = charPos;
+    const endCharPos = Math.min(charPos + unitLen - 1, charTimeMap.length - 1);
+
+    const unitStartMs = charTimeMap[startCharPos] ? charTimeMap[startCharPos].ms : 0;
+    const unitEndMs = (endCharPos + 1 < charTimeMap.length)
+      ? charTimeMap[endCharPos + 1].ms
+      : totalEndMs;
+
+    result.push({
+      startTime: msToTime(unitStartMs),
+      endTime: msToTime(unitEndMs),
+      text: addLineBreaks(unit, charsPerLine, maxLines),
+    });
+
+    charPos += unitLen;
+  }
+
+  // ============================================================
+  // STEP 4: 短すぎるセグメントを結合
+  // ============================================================
   const merged = [];
   for (let i = 0; i < result.length; i++) {
     const seg = result[i];
     const textLen = seg.text.replace(/\n/g, '').length;
 
     if (textLen < MIN_SEG_CHARS && i + 1 < result.length) {
-      // 次のセグメントの先頭に結合
       const next = result[i + 1];
       const combined = seg.text.replace(/\n/g, '') + next.text.replace(/\n/g, '');
       next.text = addLineBreaks(combined, charsPerLine, maxLines);
       next.startTime = seg.startTime;
     } else if (textLen < MIN_SEG_CHARS && merged.length > 0) {
-      // 前のセグメントに結合
       const prev = merged[merged.length - 1];
       const combined = prev.text.replace(/\n/g, '') + seg.text.replace(/\n/g, '');
       prev.text = addLineBreaks(combined, charsPerLine, maxLines);
