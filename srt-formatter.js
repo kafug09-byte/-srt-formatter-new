@@ -193,15 +193,27 @@ function removeFillers(text) {
 }
 
 /**
- * 言い切り+接続詞でセグメントを分割する位置を見つける
+ * セグメントを分割する位置を見つける
+ * 3段階で分割を試みる:
+ *   1. 言い切り+接続詞パターン（最優先）
+ *   2. 言い切りパターン単体（スペースの後ろ等）
+ *   3. 長すぎるセグメントの強制分割（助詞の後ろで切る）
  * 返り値: 分割位置の配列（文字インデックス）
  */
-function findSplitPoints(text) {
+function findSplitPoints(text, charsPerLine = 18, maxLines = 2) {
+  const maxCharsPerSegment = charsPerLine * maxLines;
   const splitPoints = [];
 
-  // 接続詞を長い順にソート（長いものから先にマッチさせる）
-  const sortedConj = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
+  function addSplitPoint(idx) {
+    if (idx <= 0 || idx >= text.length) return;
+    const alreadySplit = splitPoints.some(p => Math.abs(p - idx) < 3);
+    if (!alreadySplit) {
+      splitPoints.push(idx);
+    }
+  }
 
+  // --- 1. 言い切り+接続詞パターン ---
+  const sortedConj = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
   for (const conj of sortedConj) {
     let searchFrom = 0;
     while (true) {
@@ -211,35 +223,117 @@ function findSplitPoints(text) {
         searchFrom = idx + conj.length;
         continue;
       }
-
-      // 接続詞の前のテキストが言い切りで終わっているかチェック
       const before = text.substring(0, idx).trim();
       if (before.length > 0 && isEndOfSentence(before)) {
-        // 既存の分割位置と重複しないか確認
-        const alreadySplit = splitPoints.some(p => Math.abs(p - idx) < 3);
-        if (!alreadySplit) {
-          splitPoints.push(idx);
-        }
+        addSplitPoint(idx);
       }
-
       searchFrom = idx + conj.length;
     }
   }
 
-  // 全角スペースでの分割もチェック（Premiereが全角スペースで区切ることがある）
-  let spIdx = 0;
-  while ((spIdx = text.indexOf('\u3000', spIdx)) !== -1) {
-    const before = text.substring(0, spIdx).trim();
+  // --- 2. 言い切り単体（スペースの前が言い切りなら分割） ---
+  const spaceRegex = /[\s\u3000]+/g;
+  let spMatch;
+  while ((spMatch = spaceRegex.exec(text)) !== null) {
+    const idx = spMatch.index;
+    if (idx === 0) continue;
+    const before = text.substring(0, idx).trim();
     if (before.length > 0 && isEndOfSentence(before)) {
-      const alreadySplit = splitPoints.some(p => Math.abs(p - spIdx) < 3);
-      if (!alreadySplit) {
-        splitPoints.push(spIdx);
+      const afterIdx = idx + spMatch[0].length;
+      addSplitPoint(afterIdx);
+    }
+  }
+
+  // --- 3. 長すぎるセグメントの強制分割 ---
+  // 既存の分割点でパートに分けて、まだ長いものをさらに分割
+  const sorted = [...splitPoints].sort((a, b) => a - b);
+  const boundaries = [0, ...sorted, text.length];
+
+  for (let i = 0; i < boundaries.length - 1; i++) {
+    const partStart = boundaries[i];
+    const partEnd = boundaries[i + 1];
+    const part = text.substring(partStart, partEnd).trim();
+
+    if (part.length > maxCharsPerSegment) {
+      // この部分をさらに分割
+      const subSplits = forceSplitLongText(text, partStart, partEnd, maxCharsPerSegment);
+      for (const sp of subSplits) {
+        addSplitPoint(sp);
       }
     }
-    spIdx++;
   }
 
   return splitPoints.sort((a, b) => a - b);
+}
+
+/**
+ * 長すぎるテキストを強制的に分割する（言い切りまたは助詞の後ろで切る）
+ */
+function forceSplitLongText(fullText, start, end, maxChars) {
+  const splits = [];
+  let pos = start;
+
+  while (pos < end) {
+    const remaining = fullText.substring(pos, end).trim();
+    if (remaining.length <= maxChars) break;
+
+    // maxChars付近で言い切りパターンを探す
+    let bestSplit = -1;
+
+    // まず言い切りパターンを探す（目安文字数の範囲内で）
+    for (let i = pos + 8; i < Math.min(pos + maxChars + 5, end); i++) {
+      const textUpTo = fullText.substring(pos, i).trim();
+      if (isEndOfSentence(textUpTo)) {
+        // 次の文字がスペースか、接続詞の始まりか
+        const nextChar = fullText.substring(i, i + 1);
+        if (/[\s\u3000]/.test(nextChar) || i === end) {
+          bestSplit = i;
+          // スペースをスキップ
+          while (bestSplit < end && /[\s\u3000]/.test(fullText[bestSplit])) {
+            bestSplit++;
+          }
+        }
+      }
+    }
+
+    // 言い切りが見つからなければ助詞の後ろで切る
+    if (bestSplit === -1 || bestSplit <= pos) {
+      const searchText = fullText.substring(pos, Math.min(pos + maxChars + 5, end));
+      const sortedParticles = [...PARTICLES].sort((a, b) => b.length - a.length);
+      let bestParticlePos = -1;
+      let bestDist = Infinity;
+      const target = maxChars;
+
+      for (let i = Math.max(0, target - 10); i < Math.min(searchText.length, target + 5); i++) {
+        for (const p of sortedParticles) {
+          if (searchText.substring(i).startsWith(p)) {
+            const cutPos = i + p.length;
+            const dist = Math.abs(cutPos - target);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestParticlePos = cutPos;
+            }
+          }
+        }
+      }
+
+      if (bestParticlePos > 0) {
+        bestSplit = pos + bestParticlePos;
+      } else {
+        // 最終手段：目安文字数で切る
+        bestSplit = pos + maxChars;
+      }
+    }
+
+    if (bestSplit > pos && bestSplit < end) {
+      splits.push(bestSplit);
+      pos = bestSplit;
+    } else {
+      break;
+    }
+  }
+
+  return splits;
 }
 
 /**
@@ -389,7 +483,7 @@ function formatSegments(segments, options = {}) {
 
     // セグメント分割
     if (shouldSplitSegments) {
-      const splitPoints = findSplitPoints(text);
+      const splitPoints = findSplitPoints(text, charsPerLine, maxLines);
 
       if (splitPoints.length > 0) {
         const startMs = timeToMs(seg.startTime);
