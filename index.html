@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SRT整形ツール</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>SRT整形ツール</h1>
+    <p class="subtitle">Premiere Proの文字起こしSRTをテロップ用に整形します</p>
+
+    <div class="upload-area" id="uploadArea">
+      <div class="upload-icon">📄</div>
+      <p>SRTファイルをドラッグ&ドロップ</p>
+      <p class="or">または</p>
+      <label class="file-button">
+        ファイルを選択
+        <input type="file" id="fileInput" accept=".srt" hidden>
+      </label>
+    </div>
+
+    <div class="file-info" id="fileInfo" style="display:none;">
+      <span id="fileName"></span>
+      <button id="clearFile" class="clear-btn">✕</button>
+    </div>
+
+    <div class="settings">
+      <h2>整形設定</h2>
+      <div class="setting-row">
+        <label>1行あたりの目安文字数</label>
+        <input type="number" id="charsPerLine" value="18" min="8" max="30">
+      </div>
+      <div class="setting-row">
+        <label>最大行数</label>
+        <select id="maxLines">
+          <option value="2" selected>2行</option>
+          <option value="3">3行</option>
+        </select>
+      </div>
+      <div class="setting-row checkbox-row">
+        <label>
+          <input type="checkbox" id="removePunctuation" checked>
+          句読点（。、）を除去
+        </label>
+      </div>
+      <div class="setting-row checkbox-row">
+        <label>
+          <input type="checkbox" id="removeFillers" checked>
+          フィラー（えー、あのー等）を除去
+        </label>
+      </div>
+      <div class="setting-row checkbox-row">
+        <label>
+          <input type="checkbox" id="splitSegments" checked>
+          言い切り+接続詞でセグメント分割
+        </label>
+      </div>
+    </div>
+
+    <button class="format-btn" id="formatBtn" disabled>整形する</button>
+
+    <div class="preview-section" id="previewSection" style="display:none;">
+      <h2>プレビュー</h2>
+      <div class="preview-tabs">
+        <button class="tab active" data-tab="after">整形後</button>
+        <button class="tab" data-tab="before">整形前</button>
+        <button class="tab" data-tab="diff">変更箇所</button>
+      </div>
+      <div class="preview-content" id="previewContent"></div>
+      <div class="stats" id="stats"></div>
+      <button class="download-btn" id="downloadBtn">整形済みSRTをダウンロード</button>
+    </div>
+  </div>
+
+  <script src="srt-formatter.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
