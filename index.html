@@ -62,7 +62,10 @@
     <button class="format-btn" id="formatBtn" disabled>整形する</button>
 
     <div class="preview-section" id="previewSection" style="display:none;">
-      <h2>整形結果 <span class="edit-hint">（テキストを直接編集できます）</span></h2>
+      <div class="result-header">
+        <h2>整形結果 <span class="edit-hint">（テキストを直接編集できます）</span></h2>
+        <button class="undo-btn" id="undoBtn" disabled>↩ 戻る</button>
+      </div>
       <div class="preview-content" id="previewContent"></div>
       <div class="stats" id="stats"></div>
       <div class="action-buttons">

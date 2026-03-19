@@ -43,6 +43,8 @@ document.addEventListener('drop', (e) => e.preventDefault());
 let originalSegments = null;
 let autoFormattedSegments = null;  // 自動整形の結果（差分比較用、変更しない）
 let editSegments = [];             // 編集中のセグメント（ユーザーが操作する）
+let undoStack = [];                // 元に戻す用の履歴
+const MAX_UNDO = 50;
 let originalSRT = '';
 let currentFileName = '';
 
@@ -197,6 +199,41 @@ function updateStats() {
 }
 
 // ============================================================
+// Undo（元に戻す）
+// ============================================================
+
+function saveUndo() {
+  syncEditsFromDOM();
+  undoStack.push(JSON.stringify(editSegments));
+  if (undoStack.length > MAX_UNDO) undoStack.shift();
+  updateUndoBtn();
+}
+
+function undo() {
+  if (undoStack.length === 0) return;
+  const prev = JSON.parse(undoStack.pop());
+  editSegments = prev;
+  renderEditor();
+  updateUndoBtn();
+}
+
+function updateUndoBtn() {
+  const btn = document.getElementById('undoBtn');
+  if (btn) btn.disabled = undoStack.length === 0;
+}
+
+// 戻るボタン
+document.getElementById('undoBtn').addEventListener('click', undo);
+
+// Cmd+Z / Ctrl+Z で元に戻す
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    undo();
+  }
+});
+
+// ============================================================
 // テキスト編集
 // ============================================================
 
@@ -215,7 +252,7 @@ function onMerge(e) {
   const idx = parseInt(e.target.dataset.index);
   if (idx < 0 || idx >= editSegments.length - 1) return;
 
-  // 現在の編集内容を保存
+  saveUndo();
   syncEditsFromDOM();
 
   // 結合
@@ -234,7 +271,7 @@ function onSplit(e) {
   const idx = parseInt(e.target.dataset.index);
   if (idx < 0 || idx >= editSegments.length) return;
 
-  // 現在の編集内容を保存
+  saveUndo();
   syncEditsFromDOM();
 
   const seg = editSegments[idx];
