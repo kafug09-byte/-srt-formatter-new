@@ -2,7 +2,10 @@
  * SRT整形ツール - UIコントローラー
  */
 
-const { parseSRT, formatSegments, segmentsToSRT } = window.SRTFormatter;
+// SRTFormatter関数への参照（使用時に取得）
+function getParseSRT() { return window.SRTFormatter.parseSRT; }
+function getFormatSegments() { return window.SRTFormatter.formatSegments; }
+function getSegmentsToSRT() { return window.SRTFormatter.segmentsToSRT; }
 
 // ============================================================
 // DOM要素
@@ -27,6 +30,12 @@ const removeFillersCb = document.getElementById('removeFillers');
 const splitSegmentsCb = document.getElementById('splitSegments');
 
 // ============================================================
+// ブラウザのデフォルトドラッグ動作を無効化
+// ============================================================
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+
+// ============================================================
 // 状態
 // ============================================================
 let originalSegments = null;
@@ -39,23 +48,36 @@ let currentFileName = '';
 // ファイル読み込み
 // ============================================================
 
-uploadArea.addEventListener('click', () => fileInput.click());
+uploadArea.addEventListener('click', (e) => {
+  // ファイル選択ボタン自体をクリックした場合は二重発火を防ぐ
+  if (e.target.tagName === 'INPUT') return;
+  fileInput.click();
+});
 
 uploadArea.addEventListener('dragover', (e) => {
   e.preventDefault();
+  e.stopPropagation();
   uploadArea.classList.add('dragover');
 });
 
-uploadArea.addEventListener('dragleave', () => {
+uploadArea.addEventListener('dragleave', (e) => {
+  e.preventDefault();
   uploadArea.classList.remove('dragover');
 });
 
 uploadArea.addEventListener('drop', (e) => {
   e.preventDefault();
+  e.stopPropagation();
   uploadArea.classList.remove('dragover');
   const file = e.dataTransfer.files[0];
-  if (file && file.name.endsWith('.srt')) {
-    loadFile(file);
+  if (file) {
+    // 拡張子チェックを緩くする（大文字小文字問わず、なくてもテキストファイルならOK）
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.srt') || file.type === 'text/plain' || file.type === '') {
+      loadFile(file);
+    } else {
+      alert('SRTファイルを選択してください');
+    }
   }
 });
 
@@ -74,7 +96,7 @@ function loadFile(file) {
   const reader = new FileReader();
   reader.onload = (e) => {
     originalSRT = e.target.result;
-    originalSegments = parseSRT(originalSRT);
+    originalSegments = getParseSRT()(originalSRT);
 
     uploadArea.style.display = 'none';
     fileInfo.style.display = 'flex';
@@ -113,8 +135,8 @@ formatBtn.addEventListener('click', () => {
     shouldSplitSegments: splitSegmentsCb.checked,
   };
 
-  formattedSegments = formatSegments(originalSegments, options);
-  formattedSRT = segmentsToSRT(formattedSegments);
+  formattedSegments = getFormatSegments()(originalSegments, options);
+  formattedSRT = getSegmentsToSRT()(formattedSegments);
 
   // 統計
   const splitCount = formattedSegments.length - originalSegments.length;
