@@ -1,5 +1,5 @@
 /**
- * SRT整形エンジン v3 - 候補生成 + スコアリング方式
+ * SRT整形エンジン v4 - 差分データによるスコアリング改善
  *
  * アーキテクチャ:
  *   1. 全テキスト結合 + 文字→時間マッピング
@@ -47,6 +47,7 @@ const CONJUNCTIONS = [
   '本当に', 'ほんとに',
   'さらに', 'さらには',
   'ですが',
+  'なぜ', 'なぜなら',
 ];
 
 const PARTICLES = [
@@ -197,6 +198,19 @@ function findAllParticlePositions(text) {
       // 「んで」「んに」パターン除外（動詞の活用: 飲んで、選んで等）
       if (p.length === 1 && idx > 0 && text[idx - 1] === 'ん' && 'でに'.includes(p)) valid = false;
 
+      // 「ながら」の中の「が」は助詞ではない
+      if (p === 'が' && idx > 0 && text[idx - 1] === 'な' && text[idx + 1] === 'ら') valid = false;
+
+      // 「上がる/上がった/下がる」の中の「が」は助詞ではない
+      if (p === 'が' && idx > 0 && '上下'.includes(text[idx - 1])) valid = false;
+
+      // 「いても/ても」の「も」は助詞として切ると不自然なことが多い
+      // 例: 「費やしていても」→「ていても」の「も」で切ると「ても|収入」
+      if (p === 'も' && idx >= 2 && text.substring(idx - 2, idx) === 'て') valid = false;
+
+      // 「しても」の途中で切らない
+      if (p === 'て' && idx > 0 && text[idx - 1] === 'し' && idx + 1 < text.length && text[idx + 1] === 'も') valid = false;
+
       // 複合語内の助詞を除外（「とんでもない」の「で」「も」等）
       if (valid && p.length <= 2) {
         if (isInsideCompoundWord(text, idx, p.length, CONJUNCTION_FALSE_POSITIVES)) valid = false;
@@ -209,11 +223,31 @@ function findAllParticlePositions(text) {
 
   // 数字+単位の後に新しい数字が来る = 自然な境界
   // 例: "100万円2年で" → "100万円" | "2年で..."
-  // 例: "50万円まで" の "まで" は助詞で別途検出済み
   const unitChars = '万億円%年月日人名件回倍歳';
   for (let i = 0; i < text.length - 1; i++) {
     if (unitChars.includes(text[i]) && /\d/.test(text[i + 1])) {
       positions.add(i + 1);
+    }
+  }
+
+  // 指示詞（この/その/あの）の前 = 新しい指示対象の提示
+  // 例: "すべてこの本に" → "すべて|この本に"
+  const demonstratives = ['この', 'その', 'あの', 'どの'];
+  for (const d of demonstratives) {
+    let from = 0;
+    while (true) {
+      const idx = text.indexOf(d, from);
+      if (idx === -1) break;
+      if (idx >= 3) positions.add(idx);
+      from = idx + 1;
+    }
+  }
+
+  // 数字の前（非数字・非単位の後）= 新しい数値情報の開始
+  // 例: "加え5000名" → "加え|5000名"
+  for (let i = 1; i < text.length; i++) {
+    if (/\d/.test(text[i]) && !/[\d]/.test(text[i - 1]) && !unitChars.includes(text[i - 1])) {
+      if (i >= 3) positions.add(i);
     }
   }
 
@@ -398,8 +432,8 @@ function generateCandidates(text) {
     }
   }
 
-  // 3分割（テキストが40文字以上の場合）
-  if (text.length > 40) {
+  // 3分割（テキストが35文字以上の場合）
+  if (text.length >= 35) {
     for (let i = 0; i < valid.length; i++) {
       for (let j = i + 1; j < valid.length; j++) {
         for (let k = j + 1; k < valid.length; k++) {
@@ -547,8 +581,9 @@ function scoreStart(text) {
   // 例: 「加え5000名」「変えてきた」「使いこなす」「出させられたのか」
   const verbContinuations = [
     '加え', '変え', '使い', '使って', '取り', '受け', '出し', '出さ', '持ち',
-    '作り', '見て', '聞い', '書い', '読ん', '行っ', '来て', '立ち',
-    '生み', '務め', '輝い', '働い', '貯め', '増や', '得ら',
+    '作り', '見て', '聞い', '書い', '読ん', '行っ', '来て', '立ち', '連れ',
+    '生み', '務め', '輝い', '働い', '貯め', '増や', '得ら', '掲げ',
+    'ない特', 'なく', 'ら上', 'ら起', // 「ながら上場」→「ら上場」で始まる
   ];
   for (const vc of verbContinuations) {
     if (text.startsWith(vc)) return -8;
@@ -579,6 +614,8 @@ function scoreCoherence(segments) {
 
     // 不完全な否定パターン（「何もなかった」が分断される）
     if (/(?:何も|全く|一度も|少しも|一切|決して)$/.test(current)) score -= 15;
+    // 次のセグメントが否定の続き
+    if (/^(?:何も|全く|一度も|少しも)/.test(next) && current.length < 10) score -= 10;
 
     // 形容詞/動詞の途中で分断（「ぱっとし」+「ない」）
     if (/[しく]$/.test(current) && /^ない/.test(next)) score -= 12;
@@ -615,15 +652,35 @@ function scoreLineBreakability(text) {
   // 2行必要
   if (len <= 30) {
     const mid = Math.ceil(len / 2);
-    const positions = findAllParticlePositions(text);
+    // 助詞位置 + 接続詞位置
+    const particlePos = findAllParticlePositions(text);
+    const conjPos = findConjunctionPositions(text);
+    // 接続詞の「後ろ」位置
+    const conjAfterPos = [];
+    const sortedConjForLB = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
+    for (const cpos of conjPos) {
+      for (const conj of sortedConjForLB) {
+        if (text.substring(cpos).startsWith(conj)) {
+          conjAfterPos.push(cpos + conj.length);
+          break;
+        }
+      }
+    }
+    const positions = [...new Set([...particlePos, ...conjAfterPos])].sort((a, b) => a - b);
 
-    // 中間付近で助詞による改行ができるか
+    // 中間付近で助詞/接続詞による改行ができるか
     let bestRatio = 0;
     for (const pos of positions) {
       if (pos < 3 || len - pos < 3) continue;
       const dist = Math.abs(pos - mid);
       if (dist <= 7) {
         const ratio = Math.min(pos, len - pos) / Math.max(pos, len - pos);
+        // 否定表現を分断する位置はペナルティ
+        const before = text.substring(0, pos);
+        if (/(?:何も|全く|一度も|少しも)$/.test(before)) continue;
+        // 複合助詞を分断する位置もスキップ
+        const after = text.substring(pos);
+        if (before.endsWith('より') && after.startsWith('も')) continue;
         if (ratio > bestRatio) bestRatio = ratio;
       }
     }
@@ -680,12 +737,26 @@ function addLineBreaks(text) {
   if (len <= 15) return flat;
 
   // 改行候補を生成してスコアリング
-  const positions = findAllParticlePositions(flat);
+  // 助詞位置 + 接続詞の「後ろ」位置を合算
+  const particlePos = findAllParticlePositions(flat);
+  const conjPos = findConjunctionPositions(flat);
+  // 接続詞の後ろで改行（例: 「そしてなぜ」の後ろ）
+  const conjAfterPos = [];
+  const sortedConjForBreak = [...CONJUNCTIONS].sort((a, b) => b.length - a.length);
+  for (const pos of conjPos) {
+    for (const conj of sortedConjForBreak) {
+      if (flat.substring(pos).startsWith(conj)) {
+        conjAfterPos.push(pos + conj.length);
+        break;
+      }
+    }
+  }
+  const allBreakPositions = [...new Set([...particlePos, ...conjAfterPos])].sort((a, b) => a - b);
 
   let bestPos = -1;
   let bestScore = -Infinity;
 
-  for (const pos of positions) {
+  for (const pos of allBreakPositions) {
     if (pos < 3 || len - pos < 3) continue;
 
     let score = 0;
@@ -704,6 +775,30 @@ function addLineBreaks(text) {
     // 各行が3文字以上であること
     if (pos < 4) score -= 10;
     if (len - pos < 4) score -= 10;
+
+    // === 差分データから学んだ改行ルール ===
+
+    // 否定表現を分断しない: 「何も|なかった」→NG
+    const before = flat.substring(0, pos);
+    const after = flat.substring(pos);
+    if (/(?:何も|全く|一度も|少しも|一切|決して)$/.test(before)) score -= 15;
+
+    // 「この」「その」「あの」は行頭に来るべき: 「すべて|この本に」→OK
+    if (/^(?:この|その|あの|どの)/.test(after)) score += 3;
+
+    // 接続詞の前で改行（自然な区切り）
+    for (const conj of CONJUNCTIONS) {
+      if (after.startsWith(conj)) { score += 3; break; }
+    }
+
+    // 数字で2行目が始まる（新しい情報の提示）
+    if (/^\d/.test(after)) score += 2;
+
+    // 「よりも」「ながら」「として」を分断しない
+    if (before.endsWith('より') && after.startsWith('も')) score -= 15;
+    if (before.endsWith('な') && after.startsWith('がら')) score -= 15;
+    if (before.endsWith('と') && after.startsWith('して')) score -= 10;
+    if (before.endsWith('ことが') || before.endsWith('ことを') || before.endsWith('ことに')) score -= 5;
 
     if (score > bestScore) {
       bestScore = score;
@@ -736,6 +831,7 @@ function formatSegments(segments, options = {}) {
   } = options;
 
   const MIN_SEG_CHARS = 4;
+  const MERGE_SENTENCE_END_CHARS = 10; // 文末表現で終わる短いセグメントの結合閾値
   const GAP_THRESHOLD_MS = 300;
 
   // ============================================================
@@ -842,29 +938,51 @@ function formatSegments(segments, options = {}) {
     const flatText = seg.text.replace(/\n/g, '');
     const textLen = flatText.length;
 
-    if (textLen <= MIN_SEG_CHARS) {
-      // 短いセグメントの結合先を判断
-      // 文末表現（です、ます等）で終わる場合 → 前に結合（文の結びだから）
-      const endsWithSentenceEnd = /(?:です|ます|ました|ません|のか|した|った|ている|ていた)$/.test(flatText);
+    // 文末表現で終わるかチェック
+    const endsWithSentenceEnd = /(?:です|ます|ました|ません|のか|した|った|ている|ていた|てきた|ください|のです|わけです|ことです|ものです|おつけします|いたします|なのです)$/.test(flatText);
+    // 「という〜」で始まるかチェック（前のセグメントの修飾）
+    const startsWithModifier = /^(?:という|といった|として)/.test(flatText);
 
-      if (endsWithSentenceEnd && merged.length > 0) {
+    // 結合判定
+    const shouldMerge =
+      textLen <= MIN_SEG_CHARS ||  // 極短セグメント → 必ず結合
+      (textLen <= MERGE_SENTENCE_END_CHARS && endsWithSentenceEnd && merged.length > 0) ||  // 短い文末 → 前に結合
+      (textLen <= MERGE_SENTENCE_END_CHARS && startsWithModifier && merged.length > 0);  // 「という〜」→ 前に結合
+
+    if (shouldMerge) {
+      // 結合先の判断
+      const mergeWithPrev = (endsWithSentenceEnd || startsWithModifier) && merged.length > 0;
+
+      if (mergeWithPrev) {
         // 前のセグメントに結合
         const prev = merged[merged.length - 1];
-        const combined = prev.text.replace(/\n/g, '') + flatText;
-        prev.text = addLineBreaks(combined);
-        prev.endTime = seg.endTime;
+        const prevFlat = prev.text.replace(/\n/g, '');
+        // 結合後が長すぎないかチェック（35文字以上なら結合しない）
+        if (prevFlat.length + textLen <= 35) {
+          prev.text = addLineBreaks(prevFlat + flatText);
+          prev.endTime = seg.endTime;
+        } else {
+          merged.push({ ...seg });
+        }
       } else if (i + 1 < result.length) {
         // 次のセグメントに結合
         const next = result[i + 1];
-        const combined = flatText + next.text.replace(/\n/g, '');
-        next.text = addLineBreaks(combined);
-        next.startTime = seg.startTime;
+        const nextFlat = next.text.replace(/\n/g, '');
+        if (textLen + nextFlat.length <= 35) {
+          next.text = addLineBreaks(flatText + nextFlat);
+          next.startTime = seg.startTime;
+        } else {
+          merged.push({ ...seg });
+        }
       } else if (merged.length > 0) {
-        // 最後のセグメント → 前に結合
         const prev = merged[merged.length - 1];
-        const combined = prev.text.replace(/\n/g, '') + flatText;
-        prev.text = addLineBreaks(combined);
-        prev.endTime = seg.endTime;
+        const prevFlat = prev.text.replace(/\n/g, '');
+        if (prevFlat.length + textLen <= 35) {
+          prev.text = addLineBreaks(prevFlat + flatText);
+          prev.endTime = seg.endTime;
+        } else {
+          merged.push({ ...seg });
+        }
       } else {
         merged.push({ ...seg });
       }
